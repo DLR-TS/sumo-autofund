@@ -22,6 +22,8 @@ import sys
 import os
 import subprocess
 import math
+import csv
+import multiprocessing
 import numpy as np
 
 SUMO_HOME = os.environ.get('SUMO_HOME')
@@ -248,28 +250,30 @@ def makeAdditionalFiles(baseName, extName, nrLanes, vss, loops, dt):
     if loops > 0:
         with open(baseName + '.loops.xml','w') as floop:
             print('<additional>', file = floop)
-            rest = 'pos="500.00" freq="3600" friendly_pos="x" splitByType="x" file="detA' + extName + '.out.xml"/>'
+            rest = 'pos="500.00" freq="3600" friendly_pos="x" splitByType="x" file="detA%s%s.out.xml"/>' % (baseName, extName)
             for i in range(1,n):
                 for l in range(nrLanes):
                     il = repr(i) + '_' + repr(l)
                     print('\t<inductionLoop id="%s" lane="%s" ' % (il,il) + rest, file = floop)
-                print('\t<e3Detector id="e3_%s" freq="%s" file="detE3%s.out.xml">' % (i, dt, extName), file = floop)
+                print('\t<e3Detector id="e3_%s" freq="%s" file="detE3%s%s.out.xml">' % (i, dt, baseName, extName), file = floop)
                 for l in range(nrLanes):
                     print('\t\t<detEntry pos="250" lane="%s_%s"/>' % (i,l), file = floop)
                     print('\t\t<detExit pos="750" lane="%s_%s"/>' % (i,l) + rest, file = floop)
                 print('\t</e3Detector>', file = floop)
             print('</additional>', file = floop)
 
+    edgeStatsFile = "edgeStats%s%s.xml" % (baseName, extName)
     with open(baseName + '.add.xml','w') as fadd:
         print('<additional>',file=fadd)
-        if vss > 0:
+        if vss:
             for l in range(nrLanes):
                 txt = 'lanes="' + repr(n) + '_' + repr(l) + '" file="vss-times.xml"/>'
                 print('\t<variableSpeedSign id="' + repr(l) + '" ' + txt,file=fadd)
 
-        print('\t<edgeData id="ed" ' + n2E('freq',dt) + ' file="edgeStats' + extName + '.xml" excludeEmpty="true"/>',  file=fadd)
-        print('\t<laneData id="ld" ' + n2E('freq',dt) + ' file="laneStats' + extName + '.xml" excludeEmpty="true"/>',  file=fadd)
+        print('\t<edgeData id="ed" freq="%s" file="%s" excludeEmpty="true"/>' % (dt, edgeStatsFile),  file=fadd)
+        print('\t<laneData id="ld" freq="%s" file="laneStats%s%s.xml" excludeEmpty="true"/>' % (dt, baseName, extName),  file=fadd)
         print('</additional>',file=fadd)
+    return edgeStatsFile
 
 
 def makeConfig(baseName, deltaT, loops):
@@ -298,6 +302,7 @@ def makeConfig(baseName, deltaT, loops):
 </configuration>
 """ % (baseName, baseName, addF, deltaT))
 
+
 def runIt(baseName, myExt, nLanes, speedLimit, pTruck, pAuto=0., flowInterval=600., steplength=1., vTypes="", meso=False, vss=False):
     loops = 1
     if len(vTypes) == 0:
@@ -307,23 +312,24 @@ def runIt(baseName, myExt, nLanes, speedLimit, pTruck, pAuto=0., flowInterval=60
         <vType id="truck" vClass="truck" probability="%s"/>
     </vTypeDistribution>''' % ((1-pTruck)*(1-pAuto), pTruck*(1-pAuto), pTruck)
     makeDemand(baseName, nLanes, speedLimit, vss, vTypes, flowInterval)
-    makeAdditionalFiles(baseName, myExt, nLanes, vss, loops, flowInterval)
+    edgeStatsFile = makeAdditionalFiles(baseName, myExt, nLanes, vss, loops, flowInterval)
     makeConfig(baseName, steplength, loops)
     xml2csv = os.path.join(SUMO_HOME, 'tools', 'xml', 'xml2csv.py')
 
     if meso:
         subprocess.call([sumoBinary, '-c', baseName + '.sumocfg', '--mesosim', '--meso-overtaking'])
-        subprocess.call(['python', xml2csv, 'edgeStats' + myExt + '.xml'])
+        subprocess.call(['python', xml2csv, edgeStatsFile])
         print("meso done")
     else:
         subprocess.call([sumoBinary, '-c', baseName + '.sumocfg'])
 #  useful for debugging -- just a short run...
 #	retcode = subprocess.call([sumoBinary, '-c', baseName + '.sumocfg', '--end', str(3600)])
-        subprocess.call(['python', xml2csv, 'edgeStats' + myExt + '.xml'])
-        subprocess.call(['python', xml2csv, 'laneStats' + myExt + '.xml'])
+        subprocess.call(['python', xml2csv, edgeStatsFile])
+        subprocess.call(['python', xml2csv, edgeStatsFile.replace("edgeStats", "laneStats")])
         print("micro done")
+    return edgeStatsFile
 
-## The following, so far, runs only on my linux box at home
+
 def saltelliSA(nSim, pTruck, speedLimit):
     from SALib.sample import saltelli
     from SALib.analyze import sobol
@@ -353,11 +359,11 @@ def saltelliSA(nSim, pTruck, speedLimit):
         myExtMeso = '-' + repr(i) + '-meso'
 
         rr = makeCarTypes('Krauss', [X[i,6],X[i,7]], [X[i,8],X[i,9]], [X[i,0],X[i,1]], [X[i,2],X[i,3]], [X[i,10],X[i,11]], [X[i,4],X[i,5]], [X[i,12],X[i,13]], pTruck, pAuto=0)
-        runIt(basename, myExt, nLanes, speedLimit, pTruck, vTypes=rr)
-        err = compDist('edgeStats' + myExt + '.xml', pTruck)
+        edgeStatsFile = runIt(basename, myExt, nLanes, speedLimit, pTruck, vTypes=rr)
+        err = compDist(edgeStatsFile, pTruck)
 
-        runIt(basename, myExtMeso, nLanes, speedLimit, pTruck, vTypes=rr, meso=True)
-        errM = compDist('edgeStats' + myExtMeso + '.xml', pTruck)
+        edgeStatsFile = runIt(basename, myExtMeso, nLanes, speedLimit, pTruck, vTypes=rr, meso=True)
+        errM = compDist(edgeStatsFile, pTruck)
 
         txt = repr(i) + ' ' + repr(err) + ' ' + repr(errM) + ' '
         for j in range(len(X[i,])):
@@ -392,11 +398,11 @@ def simpleSensitivity(nSim, pTruck, speedLimit):
         myExtMeso = '-' + repr(i) + '-meso'
 
         rr = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, pTruck, pAuto=0)
-        runIt(basename, myExt, nLanes, speedLimit, pTruck, vTypes=rr)
-        err = compDist('edgeStats' + myExt + '.xml', pTruck)
+        edgeStatsFile = runIt(basename, myExt, nLanes, speedLimit, pTruck, vTypes=rr)
+        err = compDist(edgeStatsFile, pTruck)
 
-        runIt(basename, myExtMeso, nLanes, speedLimit, pTruck, vTypes=rr, meso=True)
-        errM = compDist('edgeStats' + myExtMeso + '.xml', pTruck)
+        edgeStatsFile = runIt(basename, myExtMeso, nLanes, speedLimit, pTruck, vTypes=rr, meso=True)
+        errM = compDist(edgeStatsFile, pTruck)
 
         print(i, err, a[0], a[1], b[0], b[1], ttau[0], ttau[1], fBase[0], fBase[1], fDev[0], fDev[1], sig[0], sig[1], lcSG[0], lcSG[1], file = flog)
         print(i, errM, a[0], a[1], b[0], b[1], ttau[0], ttau[1], fBase[0], fBase[1], fDev[0], fDev[1], sig[0], sig[1], lcSG[0], lcSG[1], file = flog)
@@ -487,8 +493,8 @@ def objectNL(x, grad):
     rr = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, pTruck, pAuto=0)
     makeNet(basename, nLanes, speedLimit)
 
-    runIt(basename, ext, nLanes, speedLimit, pTruck, vTypes=rr)
-    err = compDist('edgeStats' + ext + '.xml', pTruck)
+    edgeStatsFile = runIt(basename, ext, nLanes, speedLimit, pTruck, vTypes=rr)
+    err = compDist(edgeStatsFile, pTruck)
 
     with open('optimization.log','a') as flog:
         res = repr(objCnt) + ' ' + repr(err) + ' '
@@ -544,6 +550,25 @@ def optimizationSC():
     fmin_cobyla(objectiveSC, [0.18,0.09,1.1,1.1], [f1Dev, f2Dev, lc1Cstrt, lc2Cstrt], rhobeg=0.2, rhoend=1e-4)
 
 
+def runBatch(options, base, numLanes, speedLimit):
+    for tau_auto in options.tau_automated:
+        for pAuto in options.automated_percentage:
+            a = [2.0, 1.0]
+            b = [4.5, 3.5]
+            ttau = [options.tau, 1.25, tau_auto]
+            fBase = [1.18, 0.9]
+            fDev = [options.speed_deviation, 0.1]
+            sig = [options.sigma, 0.7]
+            lcSG = [1, 1]
+            vTypes = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, options.truck_percentage, pAuto)
+
+            ext = '-%.2f_%.2f%s' % (tau_auto, pAuto, "_limit" if options.vss else "")
+            edgeStatsFile = runIt(base, ext, numLanes, speedLimit,
+                  options.truck_percentage, options.automated_percentage, options.flow_interval,
+                  options.step_length, vTypes, options.mesosim, options.vss)
+            compDist(edgeStatsFile, options.truck_percentage)
+
+
 def main(options):
     #optimization()
     #exit(1)
@@ -563,24 +588,24 @@ def main(options):
     #sensitivity(1000, 0.1)
     #exit(1)
 
-    speedLimit = options.speed_limit / 3.6
-    makeNet(options.basename, options.num_lanes, speedLimit)
-    for tau_auto in options.tau_automated:
-        for pAuto in options.automated_percentage:
-            a = [2.0, 1.0]
-            b = [4.5, 3.5]
-            ttau = [options.tau, 1.25, tau_auto]
-            fBase = [1.18, 0.9]
-            fDev = [options.speed_deviation, 0.1]
-            sig = [options.sigma, 0.7]
-            lcSG = [1, 1]
-            vTypes = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, options.truck_percentage, pAuto)
-
-            ext = '-%.2f_%.2f_%s' % (tau_auto, pAuto, "limit" if options.vss else "")
-            runIt(options.basename, ext, options.num_lanes, speedLimit,
-                  options.truck_percentage, options.automated_percentage, options.flow_interval,
-                  options.step_length, vTypes, options.mesosim, options.vss)
-            compDist('edgeStats' + ext + '.xml', options.truck_percentage)
+    if options.street_type_file:
+        procs = []
+        for line in csv.DictReader(open(options.street_type_file)):
+            base = line["NAME"].replace(" ", "_")
+            numLanes = int(line["NUMLANES"])
+            speedLimit = float(line["V0PRT"][:-4]) / 3.6
+            makeNet(base, numLanes, speedLimit)
+            p = multiprocessing.Process(target=runBatch, args=(options, base, numLanes, speedLimit))
+            p.start()
+            procs.append(p)
+            if len(procs) == multiprocessing.cpu_count():
+                [p.join() for p in procs]
+                procs = []
+        [p.join() for p in procs]
+    else:
+        speedLimit = options.speed_limit / 3.6
+        makeNet(options.basename, options.num_lanes, speedLimit)
+        runBatch(options, options.basename, options.num_lanes, speedLimit)
     if options.verbose:
         print("ALL DONE")
 
