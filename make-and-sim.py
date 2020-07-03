@@ -28,7 +28,7 @@ SUMO_HOME = os.environ.get('SUMO_HOME')
 if SUMO_HOME is None:
     sys.exit("please declare environment variable 'SUMO_HOME' or set the path in the script")
 sys.path.append(os.path.join(SUMO_HOME, "tools"))
-import sumolib
+import sumolib  # noqa
 
 netconvertBinary = sumolib.checkBinary('netconvert')
 sumoBinary = sumolib.checkBinary('sumo')
@@ -36,7 +36,6 @@ sumoBinary = sumolib.checkBinary('sumo')
 xPos = [0,2000,3000,3000,2000,1000,0,0,1000,2000,3000,3000]
 yPos = [0,0,0,1000,1000,1000,1000,2000,2000,2000,2000,1500]
 
-rr = ''
 objCnt = 0
 cntDump = 0
 
@@ -53,17 +52,22 @@ def get_options(args=None):
                         help="speed deviation parameter")
     parser.add_argument("--step-length", type=float, default=1.,
                         help="simulation step length in s")
-    parser.add_argument("--flow-interval", type=float, default=600.,
+    parser.add_argument("--flow-interval", type=int, default=600,
                         help="time interval for which the flow is constant")
-    parser.add_argument("-t", "--tau", type=float, default=1.0,
+    parser.add_argument("--tau", type=float, default=1.0,
                         help="aspired minimum time headway in s")
+    parser.add_argument("-t", "--tau-automated", type=float, default=[1.0], nargs='*',
+                        help="aspired minimum time headway for the automated vehicles in s")
     parser.add_argument("--truck-percentage", type=float, default=0.,
                         help="percentage of trucks")
+    parser.add_argument("-a", "--automated-percentage", type=float, default=[0.], nargs='*',
+                        help="percentage of automated vehicles")
     parser.add_argument("-s", "--speed-limit", type=float, default=100.,
                         help="speed limit in km/h")
     parser.add_argument("--car-following-model", default="Krauss",
                         help="which car-following model to use")
     parser.add_argument("--basename", help="filename base for outputs")
+    parser.add_argument("-f", "--street-type-file", help="file defining street types to evaluate")
     parser.add_argument("--mesosim", action="store_true", default=False,
                         help="use mesoscopic simulation")
     parser.add_argument("--vss", action="store_true", default=False,
@@ -73,19 +77,13 @@ def get_options(args=None):
 
     options = parser.parse_args(args=args)
     if options.basename is None:
-        options.basename = "HBS%s" % options.num_lanes
+        options.basename = "fundi%s" % options.num_lanes
     return options
 
 
 # helper function
 def n2E(name, var):
     result = name + '="' + repr(var) + '" '
-    return result
-
-def n2Em(name, var):
-    result = name[0] + '="' + repr(var[0]) + '" '
-    for i in range(len(name)):
-        result = name[i] + '="' + repr(var[i]) + '" '
     return result
 
 # the halton code is from here:
@@ -116,11 +114,11 @@ def halton(dim, nbpts):
 
     return h.reshape(nbpts, dim)
 
-V0 = [121.20, 121.82, 123.62, 125.26]
-L0 = [0.3119, 0.2910, 0.2476, 0.2227]
-C0 = [6155, 6101, 5916, 5694]
 
 def vHBS(q, pT):
+    V0 = [121.20, 121.82, 123.62, 125.26]
+    L0 = [0.3119, 0.2910, 0.2476, 0.2227]
+    C0 = [6155, 6101, 5916, 5694]
     indx = int(round(10 * pT))
     if indx > 3:
         indx = 3
@@ -185,18 +183,15 @@ def compDist(ufName, pT):
 # 'carFollowing-IDM'
 # (attribut names:) Krauss, BKerner, IDM, Wiedemann, SmartSK, PWagner2009
 # lcSpeedGain, lcCooperative, lcKeepRight
-def makeCarTypes(model, fBase, fDev, aMax, bMax, sigma, tau, lcSG, pTruck):
+def makeCarTypes(model, fBase, fDev, aMax, bMax, sigma, tau, lcSG, pTruck, pAuto):
     vBase = (fBase[0] - fBase[1] * pTruck) / (1.0 - pTruck)
-    spP = n2E('speedFactor',vBase) + n2E('speedDev',fDev[0])
-    spT = n2E('speedFactor',fBase[1]) + n2E('speedDev',fDev[1])
-    cfModel = 'carFollowModel="' + model + '" '
-    pPars = 'minGap="3" ' + spP + n2E('sigma',sigma[0]) + n2E('tau',tau[0]) + n2E('accel',aMax[0]) + n2E('decel',bMax[0])
-    lcPars = n2E('lcSpeedGain',lcSG[0])
-    tPars = 'minGap="3" ' + spT + n2E('sigma',sigma[1]) + n2E('tau',tau[1]) + n2E('accel',aMax[1]) + n2E('decel',bMax[1])
-    pcars = '\t<vType id="pass" maxSpeed="50" length="4.2" ' + cfModel + pPars + lcPars + '/>\n'
-    trucks = '\t<vType id="truck" maxSpeed="30" length="11.6" ' + cfModel + tPars + lcPars + '/>'
-
-    return pcars + trucks
+    passenger = 'speedFactor="%s" speedDev="%s" sigma="%s" accel="%s" decel="%s" ' % (vBase, fDev[0], sigma[0], aMax[0], bMax[0])
+    truck = 'speedFactor="%s" speedDev="%s" sigma="%s" accel="%s" decel="%s" ' % (fBase[1], fDev[1], sigma[1], aMax[1], bMax[1])
+    uniAttrs = 'carFollowModel="%s" minGap="3" lcSpeedGain="%s" ' % (model, lcSG[0])
+    cars = '    <vType id="pass" %s%smaxSpeed="50" length="4.2" tau="%s" probability="%s"/>' % (uniAttrs, passenger, tau[0], (1-pTruck)*(1-pAuto))
+    auto = '    <vType id="auto" %s%smaxSpeed="50" length="4.2" tau="%s" probability="%s"/>' % (uniAttrs, passenger, tau[2], (1-pTruck)*pAuto)
+    trucks = '    <vType id="truck" vClass="truck" %s%smaxSpeed="30" length="11.6" tau="%s" probability="%s"/>' % (uniAttrs, truck, tau[1], pTruck)
+    return '    <vTypeDistribution id="typedist">\n    %s\n    %s\n    %s\n    </vTypeDistribution>' % (cars, auto, trucks)
 
 def writeVSStimes(vLim, t1, t2):
     factor = [0.5, 0.375, 0.25, 0.18, 0.12, 0.09, 0.06, 0.03, 0, 1]
@@ -228,92 +223,24 @@ def makeNet(baseName, nrLanes, speedL=27.7):
     subprocess.call([netconvertBinary, '--junctions.limit-turn-speed', '-1',
                      '-n', baseName + '.nod.xml', '-e', baseName + '.edg.xml', '-o', baseName + '.net.xml'])
 
-def makeDemand(baseName, nrLanes, vLim, pTruck, vss, vtypes, dt):
-    # define the one and only route:
-    rtxt = '\t<route id="one" edges="'
-    for i in range(len(xPos) - 1):
-        rtxt += repr(i) + ' '
-    rtxt += '"/>'
-    rest = ' departPos="last" departSpeed="max"/>'
-
+def makeDemand(baseName, nrLanes, vLim, vss, vtypes, dt):
     with open(baseName + '.rou.xml', 'w') as frou:
         print('<routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://sumo.dlr.de/xsd/routes_file.xsd">',file=frou)
-        if len(vtypes) == 0:
-            pcars = '\t<vType id="pass" maxSpeed="50" length="4.5" speedFactor="1.1" />\n'
-            trucks = '\t<vType id="truck" maxSpeed="30" length="11.6" />'
-            print(pcars + trucks, file=frou)
-        else:
-            print(vtypes,file=frou)
-        print(rtxt, file=frou)
-# does work with vehicles, but not with flows (?) would simplify my demand
-# computation below
-#        print('<vTypeDistribution id="typedist1">',file=frou)
-#        print('\t<vType id="pass" ' + n2E('probability',1-pTruck) +
-#        '/>',file=frou)
-#        print('\t<vType id="truck" ' + n2E('probability',pTruck) +
-#        '/>',file=frou)
-#        print('</vTypeDistribution>',file=frou)
-
-        cnt = 0
-        iFlow = 0
-        tmax = 43200
+        print(vtypes, file=frou)
+        # define the one and only route:
+        print('    <route id="one" edges="%s"/>' % (" ".join(map(str, range(len(xPos) - 1)))), file=frou)
         tmax = 21600
         dFlow = 2400 * dt / tmax
-        for t in range(0, tmax, dt):
-            iFlow += 1
-            flw = iFlow * dFlow
-            tflw = pTruck * nrLanes * flw
-            pflw = flw - tflw
-            dem = ''
+        for i, t in enumerate(range(0, tmax, dt)):
             for ll in range(nrLanes):
-                if ll == 0:
-                    txt = '\t<flow ' + n2E('id',cnt) + ' type="pass" route="one" ' + n2E('begin',t)
-                    txt += n2E('end',t + dt) + n2E('departLane',ll) + n2E('vehsPerHour',pflw) + rest
-                    dem += txt + '\n'
-                    cnt += 1
-                    if pTruck > 0:
-                        txt = '\t<flow ' + n2E('id',cnt) + ' type="truck" route="one" ' + n2E('begin',t)
-                        txt += n2E('end',t + dt) + n2E('departLane',ll) + n2E('vehsPerHour',tflw) + rest
-                        dem += txt + '\n'
-                        cnt += 1
-                else:
-                    txt = '\t<flow ' + n2E('id',cnt) + ' type="pass" route="one" ' + n2E('begin',t)
-                    txt += n2E('end',t + dt) + n2E('departLane',ll) + n2E('vehsPerHour',flw) + rest
-                    dem += txt + '\n'
-                    cnt += 1
-
-            print(dem, file=frou)
-
-## keep flw at maximum
-        t1 = tmax
-        t2 = tmax + 10800
-        if vss > 0:
-            dem = ''
+                print('    <flow id="%s_%s" type="typedist" route="one" begin="%s" end="%s" departLane="%s" vehsPerHour="%s" departPos="last" departSpeed="max"/>' %
+                        (i, ll, t, t + dt, ll, (i+1) * dFlow), file=frou)
+        if vss:  # keep flow at maximum
             for ll in range(nrLanes):
-                if ll == 0:
-                    txt = '\t<flow ' + n2E('id',cnt) + ' type="pass" route="one" ' + n2E('begin',t1)
-                    txt += n2E('end',t2) + n2E('departLane',ll) + n2E('vehsPerHour',pflw) + rest
-                    dem += txt + '\n'
-                    cnt += 1
-                    if pTruck > 0:
-                        cnt += 1
-                        txt = '\t<flow ' + n2E('id',cnt) + ' type="truck" route="one" ' + n2E('begin',t1)
-                        txt += n2E('end',t2) + n2E('departLane',ll) + n2E('vehsPerHour',tflw) + rest
-                        dem += txt + '\n'
-                        cnt += 1
-                else:
-                    txt = '\t<flow ' + n2E('id',cnt) + ' type="pass" route="one" ' + n2E('begin',t1)
-                    txt += n2E('end',t2) + n2E('departLane',ll) + n2E('vehsPerHour',flw) + rest
-                    dem += txt + '\n'
-                    cnt += 1
-            print(dem, file = frou)
-
+                print('    <flow id="max_%s" type="typedist" route="one" begin="%s" end="%s" departLane="%s" vehsPerHour="%s" departPos="last" departSpeed="max"/>' %
+                        (ll, tmax, tmax + 10800, ll, (i+1) * dFlow), file=frou)
+            writeVSStimes(vLim, tmax, tmax + 10800)
         print('</routes>',file=frou)
-        frou.close()
-
-        if vss > 0:
-            writeVSStimes(vLim, t1, t2)
-
 
 
 def makeAdditionalFiles(baseName, extName, nrLanes, vss, loops, dt):
@@ -371,17 +298,20 @@ def makeConfig(baseName, deltaT, loops):
 </configuration>
 """ % (baseName, baseName, addF, deltaT))
 
-def runIt(baseName, myExt, nLanes, speedLimit, pTruck, dT, vTypes, meso, vss):
+def runIt(baseName, myExt, nLanes, speedLimit, pTruck, pAuto=0., flowInterval=600., steplength=1., vTypes="", meso=False, vss=False):
     loops = 1
-    makeNet(baseName, nLanes, speedLimit)
-    dt = 600
-    makeDemand(baseName, nLanes, speedLimit, pTruck, vss, vTypes, dt)
-
-    makeAdditionalFiles(baseName, myExt, nLanes, vss, loops, dt)
-    makeConfig(baseName, dT, loops)
+    if len(vTypes) == 0:
+        vTypes = '''    <vTypeDistribution id="typedist">
+        <vType id="pass" probability="%s"/>
+        <vType id="auto" probability="%s"/>
+        <vType id="truck" vClass="truck" probability="%s"/>
+    </vTypeDistribution>''' % ((1-pTruck)*(1-pAuto), pTruck*(1-pAuto), pTruck)
+    makeDemand(baseName, nLanes, speedLimit, vss, vTypes, flowInterval)
+    makeAdditionalFiles(baseName, myExt, nLanes, vss, loops, flowInterval)
+    makeConfig(baseName, steplength, loops)
     xml2csv = os.path.join(SUMO_HOME, 'tools', 'xml', 'xml2csv.py')
 
-    if meso > 0:
+    if meso:
         subprocess.call([sumoBinary, '-c', baseName + '.sumocfg', '--mesosim', '--meso-overtaking'])
         subprocess.call(['python', xml2csv, 'edgeStats' + myExt + '.xml'])
         print("meso done")
@@ -399,7 +329,6 @@ def saltelliSA(nSim, pTruck, speedLimit):
     from SALib.analyze import sobol
     basename = 'sensitivity'
     nLanes = 3
-    dT = 1
     flog = open(basename + '.log','w')
 
     problem = {
@@ -418,15 +347,16 @@ def saltelliSA(nSim, pTruck, speedLimit):
     Y = X[:,0]
     Ym = X[:,0]
 
+    makeNet(basename, nLanes, speedLimit)
     for i in range(len(Y)):
         myExt = '-' + repr(i) + '-micro'
         myExtMeso = '-' + repr(i) + '-meso'
 
-        rr = makeCarTypes('Krauss', [X[i,6],X[i,7]], [X[i,8],X[i,9]], [X[i,0],X[i,1]], [X[i,2],X[i,3]], [X[i,10],X[i,11]], [X[i,4],X[i,5]], [X[i,12],X[i,13]], pTruck)
-        runIt(basename, myExt, nLanes, speedLimit, pTruck, dT, rr, 0, 0)
+        rr = makeCarTypes('Krauss', [X[i,6],X[i,7]], [X[i,8],X[i,9]], [X[i,0],X[i,1]], [X[i,2],X[i,3]], [X[i,10],X[i,11]], [X[i,4],X[i,5]], [X[i,12],X[i,13]], pTruck, pAuto=0)
+        runIt(basename, myExt, nLanes, speedLimit, pTruck, vTypes=rr)
         err = compDist('edgeStats' + myExt + '.xml', pTruck)
 
-        runIt(basename, myExtMeso, nLanes, speedLimit, pTruck, dT, rr, 1, 0)
+        runIt(basename, myExtMeso, nLanes, speedLimit, pTruck, vTypes=rr, meso=True)
         errM = compDist('edgeStats' + myExtMeso + '.xml', pTruck)
 
         txt = repr(i) + ' ' + repr(err) + ' ' + repr(errM) + ' '
@@ -449,6 +379,7 @@ def simpleSensitivity(nSim, pTruck, speedLimit):
 
     nLanes = 3
     x = halton(14, nSim)
+    makeNet(basename, nLanes, speedLimit)
     for i in range(nSim):
         a = [1 + 2 * x[i,0], 0.5 + x[i,1]]
         b = [2 + 4 * x[i,2], 1 + 5 * x[i,3]]
@@ -460,11 +391,11 @@ def simpleSensitivity(nSim, pTruck, speedLimit):
         myExt = '-' + repr(i) + '-micro'
         myExtMeso = '-' + repr(i) + '-meso'
 
-        rr = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, pTruck)
-        runIt(basename, myExt, nLanes, speedLimit, pTruck, dT, rr, 0, 0)
+        rr = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, pTruck, pAuto=0)
+        runIt(basename, myExt, nLanes, speedLimit, pTruck, vTypes=rr)
         err = compDist('edgeStats' + myExt + '.xml', pTruck)
 
-        runIt(basename, myExtMeso, nLanes, speedLimit, pTruck, dT, rr, 1, 0)
+        runIt(basename, myExtMeso, nLanes, speedLimit, pTruck, vTypes=rr, meso=True)
         errM = compDist('edgeStats' + myExtMeso + '.xml', pTruck)
 
         print(i, err, a[0], a[1], b[0], b[1], ttau[0], ttau[1], fBase[0], fBase[1], fDev[0], fDev[1], sig[0], sig[1], lcSG[0], lcSG[1], file = flog)
@@ -476,11 +407,9 @@ def simpleSensitivity(nSim, pTruck, speedLimit):
 def myBase():
     nLanes = 3
     sigma = 0.91
-    dT = 1
     vDev = 0.12
     basename = 'HBS' + repr(nLanes)
     speedLimit = 100 / 3.6
-    vss = 0
 
     a = [2, 1]
     b = [4.5, 2.5]
@@ -490,42 +419,36 @@ def myBase():
     sig = [sigma, 0.73]
     lcSG = [1.17, 1.1]
 
+    makeNet(basename, nLanes, speedLimit)
     for iTruck in range(4):
         pTruck = 0.1 * iTruck
         print(pTruck, vDev, sigma)
-        rr = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, pTruck)
+        rr = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, pTruck, pAuto=0)
 
-        meso = 0
         ext = '-' + str("%.2f" % sigma) + '_' + str("%.2f" % pTruck) + '_' + str("%.2f" % vDev)
-        runIt(basename, ext, nLanes, speedLimit, pTruck, dT, rr, meso, vss)
+        runIt(basename, ext, nLanes, speedLimit, pTruck, vTypes=rr)
 
-        meso = 1
         ext = '-meso-' + str("%.2f" % pTruck) + '_' + str("%.2f" % vDev)
-        runIt(basename, ext, nLanes, speedLimit, pTruck, dT, rr, meso, vss)
+        runIt(basename, ext, nLanes, speedLimit, pTruck, vTypes=rr, meso=True)
 
 
 def sumoDefault(pTruck=0.0, vss=0, speedDev=-1):
-    rr = ''
     nLanes = 3
-    dT = 1
     speedLimit = 100 / 3.6
     basename = 'HBSdef' + repr(nLanes)
-    meso = 0
+    makeNet(basename, nLanes, speedLimit)
     ext = '-default'
-    runIt(basename, ext, nLanes, speedLimit, pTruck, dT, rr, meso, vss)
+    runIt(basename, ext, nLanes, speedLimit, pTruck, vss=vss)
 
-    meso = 1
     ext = '-default-meso'
-    runIt(basename, ext, nLanes, speedLimit, pTruck, dT, rr, meso, vss)
+    runIt(basename, ext, nLanes, speedLimit, pTruck, meso=True, vss=vss)
 
 def platooning():
     nLanes = 3
     sigma = 0.5
-    dT = 1
     vDev = 0.24
     basename = 'HBS' + repr(nLanes)
     speedLimit = 130 / 3.6
-    vss = 0
 
     a = [2.6, 2.6]
     b = [3.5, 3.5]
@@ -536,15 +459,14 @@ def platooning():
     lcSG = [1, 1]
 
     pTruck = 0.2
-    rr = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, pTruck)
+    rr = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, pTruck, pAuto=0)
+    makeNet(basename, nLanes, speedLimit)
 
-    meso = 0
     ext = '-pulk'
-    runIt(basename, ext, nLanes, speedLimit, pTruck, dT, rr, meso, vss)
+    runIt(basename, ext, nLanes, speedLimit, pTruck, vTypes=rr)
 
-    meso = 1
     ext = '-pulk-meso'
-    runIt(basename, ext, nLanes, speedLimit, pTruck, dT, rr, meso, vss)
+    runIt(basename, ext, nLanes, speedLimit, pTruck, vTypes=rr, meso=True)
 
 
 def objectNL(x, grad):
@@ -554,7 +476,6 @@ def objectNL(x, grad):
     ext = '-optim'
     nLanes = 3
     pTruck = 0.1
-    dT = 1.0
     speedLimit = 100 / 3.6
     a = [x[0], x[1]]
     b = [x[2], x[3]]
@@ -563,9 +484,10 @@ def objectNL(x, grad):
     fBase = [x[8], x[9]]
     sig = [x[10], x[11]]
     lcSG = [x[12], x[13]]
-    rr = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, pTruck)
+    rr = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, pTruck, pAuto=0)
+    makeNet(basename, nLanes, speedLimit)
 
-    runIt(basename, ext, nLanes, speedLimit, pTruck, dT, rr, 0, 0)
+    runIt(basename, ext, nLanes, speedLimit, pTruck, vTypes=rr)
     err = compDist('edgeStats' + ext + '.xml', pTruck)
 
     with open('optimization.log','a') as flog:
@@ -592,9 +514,6 @@ def lc2Cstrt(x):
 
 def optimization():
     import nlopt
-    with open('optimization.log','w') as flog:
-        print('# parameters objective')
-    flog.close()
     opt = nlopt.opt(nlopt.LN_BOBYQA,14)
     xlow = [0.5,0.5, 1, 1, 1, 1, 0.01, 0.01, 1.1, 0.8, 0, 0, 0.8, 0.8]
     xhigh = [4.5,4.5, 9, 7, 2, 2, 0.4, 0.2, 1.4, 1, 1, 1, 2, 2]
@@ -621,12 +540,8 @@ def objectiveSC(x):
     return e
 
 def optimizationSC():
-    with open('optimization.log','w') as flog:
-        print('# parameters objective')
-    flog.close()
-
     from scipy.optimize import fmin_cobyla
-    fmin_cobyla(objective, [0.18,0.09,1.1,1.1], [f1Dev, f2Dev, lc1Cstrt, lc2Cstrt], rhobeg=0.2, rhoend=1e-4)
+    fmin_cobyla(objectiveSC, [0.18,0.09,1.1,1.1], [f1Dev, f2Dev, lc1Cstrt, lc2Cstrt], rhobeg=0.2, rhoend=1e-4)
 
 
 def main(options):
@@ -648,19 +563,24 @@ def main(options):
     #sensitivity(1000, 0.1)
     #exit(1)
 
-    a = [2.0, 1.0]
-    b = [4.5, 3.5]
-    ttau = [options.tau, 1.25]
-    fBase = [1.18, 0.9]
-    fDev = [options.speed_deviation, 0.1]
-    sig = [options.sigma, 0.7]
-    lcSG = [1, 1]
-    rr = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, options.truck_percentage)
+    speedLimit = options.speed_limit / 3.6
+    makeNet(options.basename, options.num_lanes, speedLimit)
+    for tau_auto in options.tau_automated:
+        for pAuto in options.automated_percentage:
+            a = [2.0, 1.0]
+            b = [4.5, 3.5]
+            ttau = [options.tau, 1.25, tau_auto]
+            fBase = [1.18, 0.9]
+            fDev = [options.speed_deviation, 0.1]
+            sig = [options.sigma, 0.7]
+            lcSG = [1, 1]
+            vTypes = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, options.truck_percentage, pAuto)
 
-    ext = '-%.2f_%.2f_%.2f' % (options.sigma, options.truck_percentage, fDev[0])
-    runIt(options.basename, ext, options.num_lanes, options.speed_limit / 3.6,
-          options.truck_percentage, options.step_length, rr, options.mesosim, options.vss)
-    compDist('edgeStats' + ext + '.xml', options.truck_percentage)
+            ext = '-%.2f_%.2f_%s' % (tau_auto, pAuto, "limit" if options.vss else "")
+            runIt(options.basename, ext, options.num_lanes, speedLimit,
+                  options.truck_percentage, options.automated_percentage, options.flow_interval,
+                  options.step_length, vTypes, options.mesosim, options.vss)
+            compDist('edgeStats' + ext + '.xml', options.truck_percentage)
     if options.verbose:
         print("ALL DONE")
 
