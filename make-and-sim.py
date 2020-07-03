@@ -39,7 +39,6 @@ xPos = [0,2000,3000,3000,2000,1000,0,0,1000,2000,3000,3000]
 yPos = [0,0,0,1000,1000,1000,1000,2000,2000,2000,2000,1500]
 
 objCnt = 0
-cntDump = 0
 
 
 def get_options(args=None):
@@ -74,6 +73,7 @@ def get_options(args=None):
                         help="use mesoscopic simulation")
     parser.add_argument("--vss", action="store_true", default=False,
                         help="use variable speed signs to limit flow")
+    parser.add_argument("-o", "--output-directory", help="write all files to separate output directory")
     parser.add_argument("-v", "--verbose", action="store_true", default=False,
                         help="tell me what you are doing")
 
@@ -139,8 +139,6 @@ def readEdgeDataFile(fname):
     return flw, vel
 
 def compDist(ufName, pT):
-    global cntDump
-
     flw, vel = readEdgeDataFile(ufName)
     nPerBin = 10
     n = len(flw)
@@ -158,25 +156,23 @@ def compDist(ufName, pT):
         vA[indx] += vel[i]
         cnt[indx] += 1
 
-    fp = open('dump-' + repr(cntDump) + '.txt','w')
-    cntDump += 1
-    v2sum = 0.0
-    cntNonZero = 0
-    for i in range(nBin):
-        if cnt[i] > 0:
-            cntNonZero += 1
-            qA[i] /= cnt[i]
-            vA[i] /= cnt[i]
-            vHat = vHBS(qA[i], pT)
-            v2sum += (vA[i] - vHat) * (vA[i] - vHat)
-            print(i,qA[i],vA[i],vHat,cnt[i],file=fp)
+    with open('dump-' + ufName + '.txt', 'w') as fp:
+        v2sum = 0.0
+        cntNonZero = 0
+        for i in range(nBin):
+            if cnt[i] > 0:
+                cntNonZero += 1
+                qA[i] /= cnt[i]
+                vA[i] /= cnt[i]
+                vHat = vHBS(qA[i], pT)
+                v2sum += (vA[i] - vHat) * (vA[i] - vHat)
+                print(i,qA[i],vA[i],vHat,cnt[i],file=fp)
 
-    if cntNonZero > 0:
-        res = math.sqrt(v2sum / cntNonZero)
-    else:
-        res = 100.0
-    print('#error:', res, file=fp)
-    fp.close()
+        if cntNonZero > 0:
+            res = math.sqrt(v2sum / cntNonZero)
+        else:
+            res = 100.0
+        print('#error:', res, file=fp)
     print(res)
     return res
 
@@ -195,10 +191,10 @@ def makeCarTypes(model, fBase, fDev, aMax, bMax, sigma, tau, lcSG, pTruck, pAuto
     trucks = '    <vType id="truck" vClass="truck" %s%smaxSpeed="30" length="11.6" tau="%s" probability="%s"/>' % (uniAttrs, truck, tau[1], pTruck)
     return '    <vTypeDistribution id="typedist">\n    %s\n    %s\n    %s\n    </vTypeDistribution>' % (cars, auto, trucks)
 
-def writeVSStimes(vLim, t1, t2):
-    factor = [0.5, 0.375, 0.25, 0.18, 0.12, 0.09, 0.06, 0.03, 0, 1]
+def writeVSStimes(filename, vLim, t1, t2):
+    factor = [0.5, 0.375, 0.25, 0.18, 0.12, 0.09, 0.06, 0.03, 0.01, 1]
     dt = (t2 - t1) / len(factor)
-    with open('vss-times.xml', 'w') as fvss:
+    with open(filename, 'w') as fvss:
         print('<vss>',file = fvss)
         print('<step ' + n2E('time',0) + n2E('speed',vLim) + '/>', file=fvss)
         for i in range(len(factor)):
@@ -241,7 +237,7 @@ def makeDemand(baseName, nrLanes, vLim, vss, vtypes, dt):
             for ll in range(nrLanes):
                 print('    <flow id="max_%s" type="typedist" route="one" begin="%s" end="%s" departLane="%s" vehsPerHour="%s" departPos="last" departSpeed="max"/>' %
                         (ll, tmax, tmax + 10800, ll, (i+1) * dFlow), file=frou)
-            writeVSStimes(vLim, tmax, tmax + 10800)
+            writeVSStimes(baseName + "-vss-times.xml", vLim, tmax, tmax + 10800)
         print('</routes>',file=frou)
 
 
@@ -251,7 +247,7 @@ def makeAdditionalFiles(baseName, extName, nrLanes, vss, loops, dt):
         with open(baseName + '.loops.xml','w') as floop:
             print('<additional>', file = floop)
             rest = 'pos="500.00" freq="3600" friendly_pos="x" splitByType="x" file="detA%s%s.out.xml"/>' % (baseName, extName)
-            for i in range(1,n):
+            for i in range(1, n):
                 for l in range(nrLanes):
                     il = repr(i) + '_' + repr(l)
                     print('\t<inductionLoop id="%s" lane="%s" ' % (il,il) + rest, file = floop)
@@ -267,8 +263,7 @@ def makeAdditionalFiles(baseName, extName, nrLanes, vss, loops, dt):
         print('<additional>',file=fadd)
         if vss:
             for l in range(nrLanes):
-                txt = 'lanes="' + repr(n) + '_' + repr(l) + '" file="vss-times.xml"/>'
-                print('\t<variableSpeedSign id="' + repr(l) + '" ' + txt,file=fadd)
+                print('\t<variableSpeedSign id="%s" lanes="%s_%s" file="%s-vss-times.xml"/>' % (l, n, l, baseName), file=fadd)
 
         print('\t<edgeData id="ed" freq="%s" file="%s" excludeEmpty="true"/>' % (dt, edgeStatsFile),  file=fadd)
         print('\t<laneData id="ld" freq="%s" file="laneStats%s%s.xml" excludeEmpty="true"/>' % (dt, baseName, extName),  file=fadd)
@@ -550,7 +545,12 @@ def optimizationSC():
     fmin_cobyla(objectiveSC, [0.18,0.09,1.1,1.1], [f1Dev, f2Dev, lc1Cstrt, lc2Cstrt], rhobeg=0.2, rhoend=1e-4)
 
 
-def runBatch(options, base, numLanes, speedLimit):
+def runBatch(options, speedLimit):
+    if options.output_directory:
+        pwd = os.getcwd()
+        os.makedirs(options.output_directory, exist_ok=True)
+        os.chdir(options.output_directory)
+    makeNet(options.basename, options.num_lanes, speedLimit)
     for tau_auto in options.tau_automated:
         for pAuto in options.automated_percentage:
             a = [2.0, 1.0]
@@ -563,10 +563,12 @@ def runBatch(options, base, numLanes, speedLimit):
             vTypes = makeCarTypes('Krauss', fBase, fDev, a, b, sig, ttau, lcSG, options.truck_percentage, pAuto)
 
             ext = '-%.2f_%.2f%s' % (tau_auto, pAuto, "_limit" if options.vss else "")
-            edgeStatsFile = runIt(base, ext, numLanes, speedLimit,
+            edgeStatsFile = runIt(options.basename, ext, options.num_lanes, speedLimit,
                   options.truck_percentage, options.automated_percentage, options.flow_interval,
                   options.step_length, vTypes, options.mesosim, options.vss)
             compDist(edgeStatsFile, options.truck_percentage)
+    if options.output_directory:
+        os.chdir(pwd)
 
 
 def main(options):
@@ -591,11 +593,11 @@ def main(options):
     if options.street_type_file:
         procs = []
         for line in csv.DictReader(open(options.street_type_file)):
-            base = line["NAME"].replace(" ", "_")
-            numLanes = int(line["NUMLANES"])
+            options.basename = line["NAME"].replace(" ", "_")
+            options.num_lanes = int(line["NUMLANES"])
             speedLimit = float(line["V0PRT"][:-4]) / 3.6
-            makeNet(base, numLanes, speedLimit)
-            p = multiprocessing.Process(target=runBatch, args=(options, base, numLanes, speedLimit))
+            options.output_directory = options.basename
+            p = multiprocessing.Process(target=runBatch, args=(options, speedLimit))
             p.start()
             procs.append(p)
             if len(procs) == multiprocessing.cpu_count():
@@ -604,8 +606,7 @@ def main(options):
         [p.join() for p in procs]
     else:
         speedLimit = options.speed_limit / 3.6
-        makeNet(options.basename, options.num_lanes, speedLimit)
-        runBatch(options, options.basename, options.num_lanes, speedLimit)
+        runBatch(options, speedLimit)
     if options.verbose:
         print("ALL DONE")
 
